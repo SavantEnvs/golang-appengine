@@ -1,0 +1,63 @@
+// mayhem/kat_export.go.src — a known-answer round trip through the App Engine
+// remote_api wire codec, exported so the dynamically-linked KAT probe
+// (mayhem/kat) can assert exact decoded field values. Staged by mayhem/build.sh
+// into _mayhem_harness/apiparse alongside the FuzzResponse harness — the same
+// proto.Unmarshal decode path the fuzz target exercises (internal/api.go:488).
+//
+// This is the BEHAVIORAL oracle's engine: it marshals a fixed Response with a
+// nested ApplicationError and RpcError plus a raw response payload, decodes it
+// back through the real protobuf parser, and returns the decoded fields. test.sh
+// asserts these exact values; when the program is neutered (LD_PRELOAD _exit(0)),
+// the probe prints nothing, every assertion misses, and test.sh FAILS (§6.3).
+package apiparse
+
+import (
+	"github.com/golang/protobuf/proto"
+
+	remotepb "google.golang.org/appengine/internal/remote_api"
+)
+
+// KAT is the decoded result of the fixed known-answer round trip.
+type KAT struct {
+	AppCode   int32
+	AppDetail string
+	RpcCode   int32
+	RpcDetail string
+	Resp      string
+	WireLen   int
+}
+
+// KATRoundTrip builds a fixed remote_api.Response, marshals it to the wire,
+// decodes it back through proto.Unmarshal, and returns the decoded fields.
+func KATRoundTrip() (KAT, error) {
+	orig := &remotepb.Response{
+		Response: []byte("hi"),
+		ApplicationError: &remotepb.ApplicationError{
+			Code:   proto.Int32(42),
+			Detail: proto.String("boom"),
+		},
+		RpcError: &remotepb.RpcError{
+			Code:   proto.Int32(3),
+			Detail: proto.String("deadline"),
+		},
+	}
+
+	wire, err := proto.Marshal(orig)
+	if err != nil {
+		return KAT{}, err
+	}
+
+	got := &remotepb.Response{}
+	if err := proto.Unmarshal(wire, got); err != nil {
+		return KAT{}, err
+	}
+
+	return KAT{
+		AppCode:   got.GetApplicationError().GetCode(),
+		AppDetail: got.GetApplicationError().GetDetail(),
+		RpcCode:   got.GetRpcError().GetCode(),
+		RpcDetail: got.GetRpcError().GetDetail(),
+		Resp:      string(got.GetResponse()),
+		WireLen:   len(wire),
+	}, nil
+}

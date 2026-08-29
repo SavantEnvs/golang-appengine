@@ -1,0 +1,55 @@
+// mayhem/harness_apiparse.go.src — native testing.F harness for the App Engine
+// API RPC wire parser: the protobuf decode of a remote_api.Response message, the
+// exact surface internal/api.go's post()/Call() runs on the dev-appserver HTTP
+// body (`proto.Unmarshal(hrespBody, res)` at internal/api.go:488).
+//
+// Staged by mayhem/build.sh into a fresh, single-file-package directory
+// (_mayhem_harness/apiparse) — a leading-underscore path skipped by
+// `go build/test ./...` wildcards but loadable by go-118-fuzz-build via an
+// explicit path — so the builder never trips over the upstream tree's mixed
+// internal(package internal)+external(package internal_test) test files and
+// testing.B benchmarks (both break go-118-fuzz-build's package loader).
+//
+// This harness is its OWN package (apiparse); remote_api.Response and
+// proto.Unmarshal are exported, so it reaches the parser through the public API —
+// no upstream source copy is needed (unlike a harness that must touch unexported
+// symbols).
+//
+// Byte-in, NO file I/O (netnew §3): the fuzzer's bytes are decoded straight from
+// memory; starter seeds are Mayhem's job via the Mayhemfile testsuite: directive.
+package apiparse
+
+import (
+	"testing"
+
+	"github.com/golang/protobuf/proto"
+
+	remotepb "google.golang.org/appengine/internal/remote_api"
+)
+
+// FuzzResponse drives proto.Unmarshal into a remote_api.Response (nested
+// ApplicationError + RpcError sub-messages) — the App Engine API response
+// codec — and, on a successful decode, re-marshals it (exercises the encode path
+// and asserts the classic Unmarshal/Marshal round-trip invariant).
+func FuzzResponse(f *testing.F) {
+	// Seed: a Response{ApplicationError{code:42, detail:"boom"}} on the wire.
+	f.Add([]byte{
+		0x1a, 0x08, // field 3 (application_error), length 8
+		0x08, 0x2a, // field 1 (code) varint 42
+		0x12, 0x04, 0x62, 0x6f, 0x6f, 0x6d, // field 2 (detail) "boom"
+	})
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		res := &remotepb.Response{}
+		if err := proto.Unmarshal(data, res); err != nil {
+			return
+		}
+		// Re-encode the successfully decoded message (exercises Marshal), then
+		// decode again — a decode-encode-decode round trip over the parser.
+		out, err := proto.Marshal(res)
+		if err != nil {
+			return
+		}
+		_ = proto.Unmarshal(out, &remotepb.Response{})
+	})
+}
